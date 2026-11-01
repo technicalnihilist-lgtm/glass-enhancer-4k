@@ -1,0 +1,8 @@
+build/
+*.keystore
+*.jks
+.kspass
+*.ap_*
+*.dex
+*.class
+.DS_Store
