@@ -5,7 +5,7 @@
 **Upscale any photo to 4K on your phone — inside a glass UI that moves in 4D.**
 
 [![Android](https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#install)
-[![APK](https://img.shields.io/badge/APK-165%20KB-6fd0ff?style=flat-square)](#install)
+[![APK](https://img.shields.io/badge/APK-161%20KB-6fd0ff?style=flat-square)](#install)
 [![Offline](https://img.shields.io/badge/works-offline-b98cff?style=flat-square)](#how-it-works)
 [![No ads](https://img.shields.io/badge/ads-none-ff6fa8?style=flat-square)](#)
 
