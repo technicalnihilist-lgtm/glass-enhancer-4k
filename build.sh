@@ -9,8 +9,8 @@ BT="$ANDROID_HOME/build-tools/34.0.0"
 AJAR="$ANDROID_HOME/platforms/android-34/android.jar"
 PROJ="$(cd "$(dirname "$0")" && pwd)/app/src/main"
 OUT="$(cd "$(dirname "$0")" && pwd)/build"
-VERSION="${VERSION:-1.0.0}"
-VCODE="${VCODE:-1}"
+VERSION="${VERSION:-1.1.0}"
+VCODE="${VCODE:-2}"
 
 rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/dex"
 

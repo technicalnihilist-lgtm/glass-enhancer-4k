@@ -133,6 +133,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 input[type=range]::-moz-range-track{height:6px;border-radius:99px;background:rgba(255,255,255,.5)}
 input[type=range]::-moz-range-thumb{width:20px;height:20px;border:0;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4)}
 .sizes{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:4px 0 6px}
+.quals{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:2px 0 4px}
 .slabel{font-size:11.5px;color:var(--sub);margin:2px 0 8px;letter-spacing:.3px}
 .btn{border:1px solid var(--edge);color:var(--text);background:rgba(255,255,255,.18);padding:11px 10px;
   border-radius:17px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;
@@ -212,7 +213,10 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border:0;border-radiu
       <button data-t="d">Depth</button>
       <button data-t="m">Motion</button>
     </div>
-    <div id="pe"><div class="slabel">OUTPUT RESOLUTION</div><div class="sizes" id="sizes"></div></div>
+    <div id="pe"><div class="slabel">OUTPUT RESOLUTION</div><div class="sizes" id="sizes"></div>
+      <div class="slabel" style="margin-top:10px">RESAMPLING QUALITY</div>
+      <div class="quals" id="quality"><button class="btn on" data-q="high">High quality</button><button class="btn" data-q="fast">Fast</button></div>
+    </div>
     <div id="pg" hidden></div>
     <div id="pd" hidden></div>
     <div id="pm" hidden></div>
@@ -237,12 +241,12 @@ const R = document.documentElement;
 const hasBridge = !!(window.AndroidBridge && window.AndroidBridge.saveImage);
 
 /* ---------------- state ---------------- */
-const S = { bounce:1, size:4096, sharp:1, den:0.2, con:1.05, sat:1.1 };
+const S = { bounce:1, size:4096, sharp:0.55, den:0.12, con:1.03, sat:1.05, quality:'high' };
 const defs = {
-  pe: [["sharp","Sharpness",0,3,0.05,1],
-       ["den","Denoise",0,1,0.05,0.2],
-       ["con","Contrast",0.8,1.4,0.01,1.05],
-       ["sat","Colors",0.6,1.6,0.01,1.1]],
+  pe: [["sharp","Sharpness",0,1.5,0.05,0.55],
+       ["den","Denoise",0,1,0.05,0.12],
+       ["con","Contrast",0.8,1.4,0.01,1.03],
+       ["sat","Colors",0.6,1.6,0.01,1.05]],
   pg: [["glass","Transparency",0,60,1,20,"--glass",v=>v/100],
        ["blur","Blur",0,60,1,26,"--blur",v=>v+"px"]],
   pd: [["depth","4D Depth",0,2,0.05,1,"--depth",v=>v],
@@ -281,6 +285,13 @@ SIZES.forEach(([l,v]) => {
     [...$("#sizes").children].forEach(c => c.classList.toggle("on", c === b));
   });
   $("#sizes").appendChild(b);
+});
+
+$("#quality").addEventListener("click", e => {
+  const q = e.target.dataset.q;
+  if (!q) return;
+  S.quality = q;
+  [...$("#quality").children].forEach(b => b.classList.toggle("on", b === e.target));
 });
 
 const PANES = { e:"#pe", g:"#pg", d:"#pd", m:"#pm" };
@@ -341,74 +352,336 @@ $("#sample").addEventListener("click", () => loadSrc("sample.jpg", "sample"));
 $("#go").addEventListener("click", () => { if (img) run(); else $("#file").click(); });
 $("#cmp").addEventListener("input", e => R.style.setProperty("--cmp", e.target.value + "%"));
 
-/* ---------------- the enhancer ---------------- */
+/* ---------------- Lanczos3 resampler with anti-ringing ---------------- */
+function lanczos3(x) {
+  if (x === 0) return 1;
+  if (x <= -3 || x >= 3) return 0;
+  const a = x * Math.PI;
+  return 3 * Math.sin(a) * Math.sin(a / 3) / (a * a);
+}
+
+function buildWeights(inSize, outSize, support) {
+  const scale = outSize / inSize;
+  const inv = 1 / scale;
+  const filtScale = scale < 1 ? inv : 1;
+  const sup = support * filtScale;
+  const taps = Math.ceil(sup) * 2 + 2;
+  const start = new Int32Array(outSize);
+  const near0 = new Int32Array(outSize);
+  const near1 = new Int32Array(outSize);
+  const wts = new Float32Array(outSize * taps);
+  for (let i = 0; i < outSize; i++) {
+    const center = (i + 0.5) * inv - 0.5;
+    const s0 = Math.floor(center - sup);
+    let sum = 0;
+    for (let k = 0; k < taps; k++) {
+      const d = (s0 + k - center) / filtScale;
+      const v = Math.abs(d) <= support ? lanczos3(d) : 0;
+      wts[i * taps + k] = v;
+      sum += v;
+    }
+    if (sum !== 0) for (let k = 0; k < taps; k++) wts[i * taps + k] /= sum;
+    start[i] = s0;
+    let n0 = Math.floor(center), n1 = n0 + 1;
+    if (n0 < 0) n0 = 0; else if (n0 >= inSize) n0 = inSize - 1;
+    if (n1 < 0) n1 = 0; else if (n1 >= inSize) n1 = inSize - 1;
+    near0[i] = n0; near1[i] = n1;
+  }
+  return { start, wts, taps, near0, near1 };
+}
+
+function resampleHRange(src, sw, sh, dw, out, wh, ch, y0, y1) {
+  const start = wh.start, wts = wh.wts, taps = wh.taps;
+  const near0 = wh.near0, near1 = wh.near1;
+  for (let y = y0; y < y1; y++) {
+    const srow = y * sw * ch, orow = y * dw * ch;
+    for (let x = 0; x < dw; x++) {
+      const s0 = start[x], base = x * taps;
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = 0; k < taps; k++) {
+        const w = wts[base + k];
+        let ix = s0 + k;
+        if (ix < 0) ix = 0; else if (ix >= sw) ix = sw - 1;
+        const p = srow + ix * ch;
+        r += src[p] * w; g += src[p + 1] * w; b += src[p + 2] * w;
+        if (ch === 4) a += src[p + 3] * w;
+      }
+      const o = orow + x * ch;
+      const q0 = srow + near0[x] * ch, q1 = srow + near1[x] * ch;
+      let l0 = src[q0], h0 = src[q1];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o] = r < l0 ? l0 : (r > h0 ? h0 : r);
+      l0 = src[q0 + 1]; h0 = src[q1 + 1];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o + 1] = g < l0 ? l0 : (g > h0 ? h0 : g);
+      l0 = src[q0 + 2]; h0 = src[q1 + 2];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o + 2] = b < l0 ? l0 : (b > h0 ? h0 : b);
+      if (ch === 4) out[o + 3] = a;
+    }
+  }
+}
+
+function resampleVRange(src, sw, sh, dh, out, wv, ch, y0, y1) {
+  const start = wv.start, wts = wv.wts, taps = wv.taps;
+  const near0 = wv.near0, near1 = wv.near1;
+  const rowBase = new Int32Array(taps);
+  const useA = ch === 4;
+  for (let y = y0; y < y1; y++) {
+    const base = y * taps;
+    for (let k = 0; k < taps; k++) {
+      let iy = start[y] + k;
+      if (iy < 0) iy = 0; else if (iy >= sh) iy = sh - 1;
+      rowBase[k] = iy * sw * ch;
+    }
+    const qa = near0[y] * sw * ch, qb = near1[y] * sw * ch;
+    const orow = y * sw * ch;
+    for (let x = 0; x < sw; x++) {
+      const xo = x * ch;
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = 0; k < taps; k++) {
+        const w = wts[base + k];
+        const p = rowBase[k] + xo;
+        r += src[p] * w; g += src[p + 1] * w; b += src[p + 2] * w;
+        if (useA) a += src[p + 3] * w;
+      }
+      const o = orow + xo;
+      const q0 = qa + xo, q1 = qb + xo;
+      let l0 = src[q0], h0 = src[q1];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o] = r < l0 ? l0 : (r > h0 ? h0 : r);
+      l0 = src[q0 + 1]; h0 = src[q1 + 1];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o + 1] = g < l0 ? l0 : (g > h0 ? h0 : g);
+      l0 = src[q0 + 2]; h0 = src[q1 + 2];
+      if (l0 > h0) { const t = l0; l0 = h0; h0 = t; }
+      out[o + 2] = b < l0 ? l0 : (b > h0 ? h0 : b);
+      if (useA) out[o + 3] = a;
+    }
+  }
+}
+
+/* ---------------- detail pass: clamped, edge-aware unsharp ---------------- */
+function blurHRange(src, dst, w, h, ch, y0, y1) {
+  for (let y = y0; y < y1; y++) {
+    const row = y * w * ch;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * ch;
+      const l = row + (x > 0 ? x - 1 : 0) * ch;
+      const r = row + (x < w - 1 ? x + 1 : w - 1) * ch;
+      dst[i] = (src[l] + 2 * src[i] + src[r] + 2) >> 2;
+      dst[i + 1] = (src[l + 1] + 2 * src[i + 1] + src[r + 1] + 2) >> 2;
+      dst[i + 2] = (src[l + 2] + 2 * src[i + 2] + src[r + 2] + 2) >> 2;
+      if (ch === 4) dst[i + 3] = src[i + 3];
+    }
+  }
+}
+
+function blurVRange(tmp, dst, w, h, ch, y0, y1) {
+  for (let y = y0; y < y1; y++) {
+    const row = y * w * ch;
+    const up = (y > 0 ? y - 1 : 0) * w * ch;
+    const dn = (y < h - 1 ? y + 1 : h - 1) * w * ch;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * ch, u = up + x * ch, v = dn + x * ch;
+      dst[i] = (tmp[u] + 2 * tmp[i] + tmp[v] + 2) >> 2;
+      dst[i + 1] = (tmp[u + 1] + 2 * tmp[i + 1] + tmp[v + 1] + 2) >> 2;
+      dst[i + 2] = (tmp[u + 2] + 2 * tmp[i + 2] + tmp[v + 2] + 2) >> 2;
+      if (ch === 4) dst[i + 3] = tmp[i + 3];
+    }
+  }
+}
+
+function enhanceRange(d, blur, w, h, ch, o, y0, y1) {
+  const sharp = o.sharp, den = o.den, con = o.con, sat = o.sat;
+  const B = w * ch;
+  for (let y = y0; y < y1; y++) {
+    const row = y * B;
+    const up = (y > 0 ? y - 1 : 0) * B;
+    const dn = (y < h - 1 ? y + 1 : h - 1) * B;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * ch;
+      const l = row + (x > 0 ? x - 1 : 0) * ch;
+      const r = row + (x < w - 1 ? x + 1 : w - 1) * ch;
+      const u = up + x * ch, v = dn + x * ch;
+      for (let c = 0; c < 3; c++) {
+        const j = i + c;
+        const val = d[j];
+        const a1 = d[l + c], a2 = d[r + c], a3 = d[u + c], a4 = d[v + c];
+        let mn = val, mx = val;
+        if (a1 < mn) mn = a1; else if (a1 > mx) mx = a1;
+        if (a2 < mn) mn = a2; else if (a2 > mx) mx = a2;
+        if (a3 < mn) mn = a3; else if (a3 > mx) mx = a3;
+        if (a4 < mn) mn = a4; else if (a4 > mx) mx = a4;
+        const bv = blur[j];
+        const grad = (mx - mn) * 0.025;
+        const e = grad > 1 ? 1 : grad;
+        let val2 = val;
+        if (den > 0) val2 = val2 + (bv - val2) * (den * (1 - e));
+        if (sharp > 0) {
+          let det = val2 - bv;
+          const ad = det < 0 ? -det : det;
+          det = det / (1 + ad * 0.045);
+          let nv = val2 + det * (sharp * (1 - 0.85 * e));
+          if (nv < mn) nv = mn; else if (nv > mx) nv = mx;
+          val2 = nv;
+        }
+        d[j] = val2;
+      }
+      const r0 = d[i], g0 = d[i + 1], b0 = d[i + 2];
+      const lum = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
+      d[i]     = (lum + (r0 - lum) * sat - 128) * con + 128;
+      d[i + 1] = (lum + (g0 - lum) * sat - 128) * con + 128;
+      d[i + 2] = (lum + (b0 - lum) * sat - 128) * con + 128;
+    }
+  }
+}
+
+/* ---------------- pipeline ---------------- */
+function hasAlpha(data, ch) {
+  if (ch === 3) return false;
+  for (let i = 3; i < data.length; i += 4 * 97) if (data[i] < 255) return true;
+  return false;
+}
+
+async function resampleLanczos(src, sw, sh, dw, dh, ch, prog) {
+  const wh = buildWeights(sw, dw, 3), wv = buildWeights(sh, dh, 3);
+  const mid = new Uint8ClampedArray(dw * sh * ch);
+  const out = new Uint8ClampedArray(dw * dh * ch);
+  const bandH = Math.max(1, Math.floor(1500000 / dw));
+  const bandV = Math.max(1, Math.floor(1500000 / dw));
+  for (let y = 0; y < sh; y += bandH) {
+    resampleHRange(src, sw, sh, dw, mid, wh, ch, y, Math.min(sh, y + bandH));
+    prog(0.42 * (y + bandH) / sh);
+    await tick();
+  }
+  for (let y = 0; y < dh; y += bandV) {
+    resampleVRange(mid, dw, sh, dh, out, wv, ch, y, Math.min(dh, y + bandV));
+    prog(0.42 + 0.43 * (y + bandV) / dh);
+    await tick();
+  }
+  return out;
+}
+
+async function sharpenPass(d, w, h, ch, prog) {
+  const tmp = new Uint8ClampedArray(d.length);
+  const blur = new Uint8ClampedArray(d.length);
+  const band = Math.max(1, Math.floor(1500000 / w));
+  for (let y = 0; y < h; y += band) {
+    blurHRange(d, tmp, w, h, ch, y, Math.min(h, y + band));
+    prog(0.86 + 0.05 * (y + band) / h);
+    await tick();
+  }
+  for (let y = 0; y < h; y += band) {
+    blurVRange(tmp, blur, w, h, ch, y, Math.min(h, y + band));
+    prog(0.88 + 0.05 * (y + band) / h);
+    await tick();
+  }
+  for (let y = 0; y < h; y += band) {
+    enhanceRange(d, blur, w, h, ch, S, y, Math.min(h, y + band));
+    prog(0.93 + 0.07 * (y + band) / h);
+    await tick();
+  }
+  return d;
+}
+
 async function run() {
   if (!img || busy) return;
   busy = true;
   const btn = $("#go");
   btn.disabled = true;
+  const t0 = performance.now();
   try {
     const iw = img.naturalWidth, ih = img.naturalHeight;
     const sc = S.size / Math.max(iw, ih);
     const W = Math.max(1, Math.round(iw * sc)), H = Math.max(1, Math.round(ih * sc));
 
-    btn.textContent = "Upscaling\u2026"; pill("UPSCALING");
+    const prog = p => {
+      btn.textContent = "Enhancing " + Math.round(Math.min(1, p) * 100) + "%";
+    };
+    btn.textContent = "Reading image\u2026";
+    pill("WORKING");
     await tick();
 
-    let src = img, cw = iw, ch = ih;
-    while (cw !== W || ch !== H) {
-      const nw = Math.min(W, Math.round(cw * 1.6)), nh = Math.min(H, Math.round(ch * 1.6));
-      const c = document.createElement("canvas");
-      c.width = nw; c.height = nh;
-      const x = c.getContext("2d");
-      x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
-      x.drawImage(src, 0, 0, nw, nh);
-      src = c; cw = nw; ch = nh;
-      await tick();
-    }
-    if (src === img) {
-      const c = document.createElement("canvas");
-      c.width = W; c.height = H;
-      c.getContext("2d").drawImage(img, 0, 0, W, H);
-      src = c;
-    }
+    // pull the source pixels at native size
+    const sCan = document.createElement("canvas");
+    sCan.width = iw; sCan.height = ih;
+    const sCtx = sCan.getContext("2d", { willReadFrequently: true });
+    sCtx.drawImage(img, 0, 0);
+    const srcData = sCtx.getImageData(0, 0, iw, ih);
+    const keepAlpha = hasAlpha(srcData.data, 4);
+    const ch = keepAlpha ? 4 : 3;
 
-    const out = $("#out");
-    out.width = W; out.height = H;
-    const ctx = out.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(src, 0, 0);
-
-    const id = ctx.getImageData(0, 0, W, H);
-    const d = id.data, s = new Uint8ClampedArray(d), B = W * 4;
-    const sh = S.sharp, dn = S.den, con = S.con, sat = S.sat;
-
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1, i = y * B + 4; x < W - 1; x++, i += 4) {
-        let r, g, b;
-        for (let c = 0; c < 3; c++) {
-          const j = i + c, o = s[j];
-          const bl = (s[j-B-4] + s[j-B] + s[j-B+4] + s[j-4] + o + s[j+4] + s[j+B-4] + s[j+B] + s[j+B+4]) / 9;
-          const v = o * (1 - dn) + bl * dn + sh * (o - bl);
-          if (c === 0) r = v; else if (c === 1) g = v; else b = v;
-        }
-        const l = 0.299 * r + 0.587 * g + 0.114 * b;
-        d[i]     = (l + (r - l) * sat - 128) * con + 128;
-        d[i + 1] = (l + (g - l) * sat - 128) * con + 128;
-        d[i + 2] = (l + (b - l) * sat - 128) * con + 128;
+    let src;
+    if (ch === 3) {
+      src = new Uint8ClampedArray(iw * ih * 3);
+      const sd = srcData.data;
+      for (let i = 0, j = 0; i < sd.length; i += 4, j += 3) {
+        src[j] = sd[i]; src[j + 1] = sd[i + 1]; src[j + 2] = sd[i + 2];
       }
-      if (y % 140 === 0) {
-        btn.textContent = "Enhancing " + Math.round(y / H * 100) + "%";
+    } else {
+      src = new Uint8ClampedArray(srcData.data);
+    }
+    sCan.width = sCan.height = 0;
+
+    let out, och = ch;
+    if (S.quality === "fast") {
+      // quick path: canvas resize in 2x steps, then the same detail pass
+      let cur = img, cw = iw, chh = ih;
+      while (cw !== W || chh !== H) {
+        const nw = Math.min(W, cw * 2), nh = Math.min(H, chh * 2);
+        const c = document.createElement("canvas");
+        c.width = nw; c.height = nh;
+        const x = c.getContext("2d");
+        x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+        x.drawImage(cur, 0, 0, nw, nh);
+        cur = c; cw = nw; chh = nh;
+        prog(0.4 * (cw / W));
         await tick();
       }
+      const oCan = document.createElement("canvas");
+      oCan.width = W; oCan.height = H;
+      const octx = oCan.getContext("2d", { willReadFrequently: true });
+      octx.drawImage(cur, 0, 0, W, H);
+      const od = octx.getImageData(0, 0, W, H);
+      out = new Uint8ClampedArray(od.data);
+      och = 4;
+    } else {
+      out = await resampleLanczos(src, iw, ih, W, H, ch, prog);
+      och = ch;
     }
-    ctx.putImageData(id, 0, 0);
+    src = null;
 
+    await sharpenPass(out, W, H, och, prog);
+
+    // paint the result
+    const oCan = document.createElement("canvas");
+    oCan.width = W; oCan.height = H;
+    const octx = oCan.getContext("2d");
+    const imgData = octx.createImageData(W, H);
+    if (och === 3) {
+      const dst = imgData.data;
+      for (let i = 0, j = 0; i < out.length; i += 3, j += 4) {
+        dst[j] = out[i]; dst[j + 1] = out[i + 1]; dst[j + 2] = out[i + 2]; dst[j + 3] = 255;
+      }
+    } else {
+      imgData.data.set(out);
+    }
+    octx.putImageData(imgData, 0, 0);
+    out = null;
+
+    const shown = $("#out");
+    shown.width = W; shown.height = H;
+    shown.getContext("2d").drawImage(oCan, 0, 0);
+    oCan.width = oCan.height = 0;
+
+    const ms = Math.round(performance.now() - t0);
     $("#info").textContent = iw + "\u00d7" + ih + " \u2192 " + W + "\u00d7" + H;
-    pill(S.size >= 4096 ? "4K READY" : "DONE");
+    pill((S.size >= 4096 ? "4K READY" : "DONE") + (ms > 300 ? " \u00b7 " + (ms / 1000).toFixed(1) + "s" : ""));
     rep($("#wrap")); rep($("#info"));
   } catch (err) {
     pill("ERROR");
-    toast("Enhance failed: " + err.message);
+    toast("Enhance failed: " + (err && err.message ? err.message : err));
   }
   btn.textContent = "Enhance again";
   btn.disabled = false;
@@ -513,6 +786,7 @@ $("#theme").addEventListener("click", () => {
   if (q.has("px"))    set("--px", q.get("px"));
   if (q.has("py"))    set("--py", q.get("py"));
   if (q.get("theme") === "light") R.dataset.theme = "light";
+  if (q.get("lock") === "1") { gy = true; tx = cx; ty = cy; }
   if (q.get("tab")) {
     const b = document.querySelector('#tabs [data-t="' + q.get("tab") + '"]');
     if (b) b.click();
