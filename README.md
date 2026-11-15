@@ -1,4 +1,21 @@
+<div align="center">
 
+<img src="screenshots/banner.png" alt="Glass Enhancer 4K" width="100%">
+
+**Upscale any photo to 4K on your phone — inside a glass UI that moves in 4D.**
+
+[![Android](https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#install)
+[![APK](https://img.shields.io/badge/APK-165%20KB-6fd0ff?style=flat-square)](#install)
+[![Offline](https://img.shields.io/badge/works-offline-b98cff?style=flat-square)](#how-it-works)
+[![No ads](https://img.shields.io/badge/ads-none-ff6fa8?style=flat-square)](#)
+
+</div>
+
+---
+
+Glass Enhancer 4K is a small, fast Android app that takes a low-resolution image and rebuilds it at up to 4096 px on the long edge. Everything runs on the device — no server, no upload, no account. The interface is a layered glassmorphism stack with a real 4D depth system: cards sit at different Z depths, so the whole scene rotates, shifts and parallaxes under your finger or your phone's tilt sensor.
+
+<img src="screenshots/parallax-comparison.png" alt="4D depth and parallax" width="100%">
 
 ## ☕ Donate / Buy me a coffee
 
@@ -84,25 +101,6 @@ If you like our work, you can support us with a donation. We are bringing this v
 </details>
 
 ---
-
-<div align="center">
-
-<img src="screenshots/banner.png" alt="Glass Enhancer 4K" width="100%">
-
-**Upscale any photo to 4K on your phone — inside a glass UI that moves in 4D.**
-
-[![Android](https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#install)
-[![APK](https://img.shields.io/badge/APK-165%20KB-6fd0ff?style=flat-square)](#install)
-[![Offline](https://img.shields.io/badge/works-offline-b98cff?style=flat-square)](#how-it-works)
-[![No ads](https://img.shields.io/badge/ads-none-ff6fa8?style=flat-square)](#)
-
-</div>
-
----
-
-Glass Enhancer 4K is a small, fast Android app that takes a low-resolution image and rebuilds it at up to 4096 px on the long edge. Everything runs on the device — no server, no upload, no account. The interface is a layered glassmorphism stack with a real 4D depth system: cards sit at different Z depths, so the whole scene rotates, shifts and parallaxes under your finger or your phone's tilt sensor.
-
-<img src="screenshots/parallax-comparison.png" alt="4D depth and parallax" width="100%">
 
 ## Features
 
@@ -275,4 +273,5 @@ If you like this app and our work, please **star this repository** ⭐ and **[fo
 - **Telugu** (తెలుగు): ⭐ మీకు ఈ యాప్, మా పని నచ్చితే, దయచేసి రిపోజిటరీకి ఒక స్టార్ ఇచ్చి మమ్మల్ని ఫాలో అవ్వండి. ఒకవేళ మా పని మీకు నచ్చకపోతే, పర్వాలేదు — అది మీ ఇష్టం. మమ్మల్ని సందర్శించినందుకు ధన్యవాదాలు!
 
 </details>
+
 
